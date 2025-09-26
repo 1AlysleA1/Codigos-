@@ -1,1 +1,634 @@
+; BLACKJACK.ASM - Juego de Blackjack para EMU8086
+
+org 100h
+
+jmp start
+
+; ===============================
+; VARIABLES GLOBALES
+; ===============================
+player_hand db 10 dup(0)    ; Mano del jugador
+dealer_hand db 10 dup(0)    ; Mano del dealer
+player_count db 0           ; Número de cartas del jugador
+dealer_count db 0           ; Número de cartas del dealer
+player_score db 0           ; Puntaje del jugador
+dealer_score db 0           ; Puntaje del dealer
+game_over db 0              ; 0 = juego activo, 1 = juego terminado
+
+deck db 52 dup(0)           ; Baraja (0 = disponible, 1 = usada)
+seed dw 0                   ; Semilla para números aleatorios
+
+; Mensajes
+msg_welcome db 'BLACKJACK 21 - Presione cualquier tecla$'
+msg_player_turn db 13,10,'TURNO DEL JUGADOR$'
+msg_dealer_turn db 13,10,'TURNO DEL DEALER$'
+msg_win db 13,10,'*** ¡GANASTE! ***$'
+msg_lose db 13,10,'*** Perdiste ***$'
+msg_tie db 13,10,'*** Empate ***$'
+msg_hit_stay db 13,10,'Pedir carta? (S/N): $'
+msg_player_bust db 13,10,'¡Te pasaste de 21!$'
+msg_dealer_hits db 13,10,'Dealer pide carta$'
+msg_dealer_stands db 13,10,'Dealer se planta$'
+msg_dealer_bust db 13,10,'¡Dealer se paso de 21!$'
+msg_player_hand db 13,10,'Jugador: $'
+msg_dealer_hand db 13,10,'Dealer:  $'
+msg_score db ' - Puntos: $'
+newline db 13,10,'$'
+
+; ===============================
+; PROGRAMA PRINCIPAL
+; ===============================
+start:
+    ; Limpiar pantalla
+    mov ax, 0003h
+    int 10h
+    
+    ; Inicializar semilla aleatoria con el tiempo del sistema
+    mov ah, 00h
+    int 1Ah        ; Obtener ticks del sistema en CX:DX
+    mov seed, dx   ; Usar DX como semilla
+    
+    ; Mostrar bienvenida
+    mov dx, offset msg_welcome
+    mov ah, 09h
+    int 21h
+    
+    ; Esperar tecla
+    mov ah, 07h
+    int 21h
+    
+    ; Inicializar juego
+    call init_deck
+    call deal_initial_cards
+    
+game_loop:
+    cmp game_over, 1
+    je end_game
+    
+    ; Turno del jugador
+    call player_turn
+    cmp game_over, 1
+    je end_game
+    
+    ; Turno del dealer
+    call dealer_turn
+    
+    jmp end_game
+
+end_game:
+    ; Determinar resultado
+    call determine_winner
+    
+    ; Esperar tecla para salir
+    mov ah, 07h
+    int 21h
+    
+    ; Salir a DOS
+    mov ax, 4C00h
+    int 21h
+
+; ===============================
+; INICIALIZAR BARAJA
+; ===============================
+init_deck:
+    mov cx, 52
+    mov si, 0
+init_loop:
+    mov deck[si], 0     ; 0 = carta disponible
+    inc si
+    loop init_loop
+    ret
+
+; ===============================
+; GENERAR NÚMERO ALEATORIO
+; ===============================
+random_number:
+    push dx
+    mov ax, seed
+    mov dx, 8405h       ; multiplicador
+    mul dx
+    add ax, 1234h
+    mov seed, ax
+    pop dx
+    ret
+
+; ===============================
+; REPARTIR CARTA ALEATORIA (CORREGIDO)
+; ===============================
+deal_card:
+    push bx
+    push cx
+    push dx
+    
+get_random_card:
+    call random_number
+    
+    ; Obtener número entre 0-51 (remainder de seed / 52)
+    xor dx, dx
+    mov bx, 52
+    div bx              ; DX = resto (0-51)
+    mov ax, dx
+    
+    ; Verificar si ya fue usada
+    mov bx, offset deck
+    add bx, ax
+    cmp byte ptr [bx], 0
+    jne get_random_card
+    
+    ; Marcar usada
+    mov byte ptr [bx], 1
+    
+    ; Convertir índice (0-51) a carta (1-13)
+    xor dx, dx
+    mov bl, 13
+    div bl              ; AL = cociente (palo), AH = resto (0-12)
+    mov al, ah
+    add al, 1           ; 1–13
+    
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+; ===============================
+; AÑADIR CARTA A MANO DEL JUGADOR
+; ===============================
+add_to_player_hand:
+    push bx
+    mov bl, player_count
+    mov bh, 0
+    mov player_hand[bx], al
+    inc player_count
+    pop bx
+    ret
+
+; ===============================
+; AÑADIR CARTA A MANO DEL DEALER
+; ===============================
+add_to_dealer_hand:
+    push bx
+    mov bl, dealer_count
+    mov bh, 0
+    mov dealer_hand[bx], al
+    inc dealer_count
+    pop bx
+    ret
+
+; ===============================
+; REPARTIR CARTAS INICIALES
+; ===============================
+deal_initial_cards:
+    ; 2 cartas al jugador
+    mov cx, 2
+player_init:
+    call deal_card
+    call add_to_player_hand
+    loop player_init
+    
+    ; 2 cartas al dealer
+    mov cx, 2  
+dealer_init:
+    call deal_card
+    call add_to_dealer_hand
+    loop dealer_init
+    ret
+
+; ===============================
+; IMPRIMIR NUEVA LÍNEA
+; ===============================
+print_newline:
+    push dx
+    push ax
+    mov dx, offset newline
+    mov ah, 09h
+    int 21h
+    pop ax
+    pop dx
+    ret
+
+; ===============================
+; IMPRIMIR NÚMERO (0-99) - CORREGIDO
+; ===============================
+print_number:
+    push ax
+    push bx
+    push dx
+
+    ; Entrada: AL = número (0-99)
+    mov ah, 0
+    mov bl, 10
+    div bl              ; AL = decenas, AH = unidades
+
+    ; Guardar unidades en BH (BX fue preservado por push bx)
+    mov bh, ah          ; BH = unidades (0..9)
+
+    cmp al, 0
+    je .print_only_units
+
+    ; Imprimir decenas
+    add al, '0'
+    mov dl, al
+    mov ah, 02h
+    int 21h
+
+.print_only_units:
+    ; Imprimir unidades
+    mov dl, bh
+    add dl, '0'
+    mov ah, 02h
+    int 21h
+
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; ===============================
+; IMPRIMIR CARTA
+; ===============================
+print_card:
+    push ax
+    push dx
+    
+    cmp al, 1
+    je print_ace
+    cmp al, 11
+    je print_jack
+    cmp al, 12
+    je print_queen
+    cmp al, 13
+    je print_king
+    
+    ; Para números 2-10
+    call print_number
+    jmp print_card_done
+    
+print_ace:
+    mov dl, 'A'
+    jmp print_char
+print_jack:
+    mov dl, 'J'
+    jmp print_char
+print_queen:
+    mov dl, 'Q'
+    jmp print_char
+print_king:
+    mov dl, 'K'
+print_char:
+    mov ah, 02h
+    int 21h
+print_card_done:
+    mov dl, ' '
+    mov ah, 02h
+    int 21h
+    pop dx
+    pop ax
+    ret
+
+; ===============================
+; MOSTRAR MANO DEL JUGADOR (CORREGIDO - NO USAR LOOP)
+; ===============================
+show_player_hand:
+    push ax
+    push si
+    push dx
+    
+    mov dx, offset msg_player_hand
+    mov ah, 09h
+    int 21h
+    
+    xor si, si          ; índice = 0
+.show_player_loop:
+    mov al, player_count
+    xor ah, ah
+    cmp si, ax
+    jae .show_player_done
+
+    mov al, player_hand[si]
+    call print_card
+    inc si
+    jmp .show_player_loop
+
+.show_player_done:
+    mov dx, offset msg_score
+    mov ah, 09h
+    int 21h
+    
+    mov al, player_score
+    call print_number
+    
+    pop dx
+    pop si
+    pop ax
+    ret
+
+; ===============================
+; MOSTRAR MANO DEL DEALER (CORREGIDO - NO USAR LOOP)
+; ===============================
+show_dealer_hand:
+    push ax
+    push si
+    push dx
+    
+    mov dx, offset msg_dealer_hand
+    mov ah, 09h
+    int 21h
+    
+    xor si, si
+.show_dealer_loop:
+    mov al, dealer_count
+    xor ah, ah
+    cmp si, ax
+    jae .show_dealer_done
+
+    mov al, dealer_hand[si]
+    call print_card
+    inc si
+    jmp .show_dealer_loop
+
+.show_dealer_done:
+    mov dx, offset msg_score
+    mov ah, 09h
+    int 21h
+    
+    mov al, dealer_score
+    call print_number
+    
+    pop dx
+    pop si
+    pop ax
+    ret
+
+; ===============================
+; CALCULAR VALOR DE CARTA
+; ===============================
+get_card_value:
+    cmp al, 10
+    jg face_card
+    ret
+face_card:
+    mov al, 10
+    ret
+
+; ===============================
+; CALCULAR PUNTAJE DEL JUGADOR (CORREGIDO)
+; ===============================
+calc_player_score:
+    push cx
+    push si
+    push bx
+    
+    mov byte ptr [player_score], 0
+    mov bl, 0           ; contador de Ases
+    
+    mov cl, player_count
+    xor ch, ch
+    xor si, si
+
+player_score_loop:
+    cmp si, cx
+    jae player_score_done_loop
+    mov al, player_hand[si]
+    cmp al, 1
+    jne not_ace_p
+    add byte ptr [player_score], 11
+    inc bl
+    jmp next_card_p
+
+not_ace_p:
+    call get_card_value
+    add byte ptr [player_score], al
+
+next_card_p:
+    inc si
+    jmp player_score_loop
+
+player_score_done_loop:
+; Ajustar ases (si > 21 y hay ases, restar 10 por cada as hasta <=21 o se acaben)
+adjust_aces_player:
+    mov al, [player_score]
+    cmp al, 21
+    jle adjust_player_done
+    cmp bl, 0
+    je adjust_player_done
+    sub byte ptr [player_score], 10
+    dec bl
+    jmp adjust_aces_player
+
+adjust_player_done:
+    pop bx
+    pop si
+    pop cx
+    ret
+
+; ===============================
+; CALCULAR PUNTAJE DEL DEALER (CORREGIDO)
+; ===============================
+calc_dealer_score:
+    push cx
+    push si
+    push bx
+    
+    mov byte ptr [dealer_score], 0
+    mov bl, 0
+    
+    mov cl, dealer_count
+    xor ch, ch
+    xor si, si
+
+dealer_score_loop:
+    cmp si, cx
+    jae dealer_score_done_loop
+    mov al, dealer_hand[si]
+    cmp al, 1
+    jne not_ace_d
+    add byte ptr [dealer_score], 11
+    inc bl
+    jmp next_card_d
+
+not_ace_d:
+    call get_card_value
+    add byte ptr [dealer_score], al
+
+next_card_d:
+    inc si
+    jmp dealer_score_loop
+
+dealer_score_done_loop:
+adjust_aces_dealer:
+    mov al, [dealer_score]
+    cmp al, 21
+    jle adjust_dealer_done
+    cmp bl, 0
+    je adjust_dealer_done
+    sub byte ptr [dealer_score], 10
+    dec bl
+    jmp adjust_aces_dealer
+
+adjust_dealer_done:
+    pop bx
+    pop si
+    pop cx
+    ret
+
+; ===============================
+; TURNO DEL JUGADOR
+; ===============================
+player_turn:
+    mov dx, offset msg_player_turn
+    mov ah, 09h
+    int 21h
+    call print_newline
+    
+player_decision:
+    call calc_player_score
+    call show_player_hand
+    call print_newline
+    
+    mov al, [player_score]
+    cmp al, 21
+    jg player_bust
+    je player_blackjack
+    
+    mov dx, offset msg_hit_stay
+    mov ah, 09h
+    int 21h
+    
+    mov ah, 07h
+    int 21h
+    
+    ; AH devuelve el código de función, el carácter viene en AL
+    mov dl, al
+    mov ah, 02h
+    int 21h
+    call print_newline
+    
+    cmp al, 'S'
+    je player_hit
+    cmp al, 's'
+    je player_hit
+    cmp al, 'N'
+    je player_stand
+    cmp al, 'n'
+    je player_stand
+    
+    jmp player_decision
+    
+player_hit:
+    call deal_card
+    call add_to_player_hand
+    jmp player_decision
+    
+player_stand:
+    jmp player_turn_end
+    
+player_bust:
+    mov dx, offset msg_player_bust
+    mov ah, 09h
+    int 21h
+    mov byte ptr [game_over], 1
+    jmp player_turn_end
+    
+player_blackjack:
+    mov byte ptr [game_over], 1
+    
+player_turn_end:
+    ret
+
+; ===============================
+; TURNO DEL DEALER
+; ===============================
+dealer_turn:
+    cmp byte ptr [game_over], 1
+    je dealer_turn_end
+    
+    mov dx, offset msg_dealer_turn
+    mov ah, 09h
+    int 21h
+    call print_newline
+    
+dealer_decision:
+    call calc_dealer_score
+    call show_dealer_hand
+    call print_newline
+    
+    mov al, [dealer_score]
+    cmp al, 17
+    jl dealer_hit
+    jmp dealer_stand
+    
+dealer_hit:
+    mov dx, offset msg_dealer_hits
+    mov ah, 09h
+    int 21h
+    call print_newline
+    
+    call deal_card
+    call add_to_dealer_hand
+    
+    jmp dealer_decision
+    
+dealer_stand:
+    mov dx, offset msg_dealer_stands
+    mov ah, 09h
+    int 21h
+    mov byte ptr [game_over], 1
+    jmp dealer_turn_end
+    
+dealer_bust:
+    mov dx, offset msg_dealer_bust
+    mov ah, 09h
+    int 21h
+    mov byte ptr [game_over], 1
+    
+dealer_turn_end:
+    ret
+
+; ===============================
+; MOSTRAR MANOS FINALES
+; ===============================
+show_final_hands:
+    call print_newline
+    call calc_player_score
+    call show_player_hand
+    call print_newline
+    call calc_dealer_score
+    call show_dealer_hand
+    call print_newline
+    ret
+
+; ===============================
+; DETERMINAR GANADOR
+; ===============================
+determine_winner:
+    call show_final_hands
+    
+    mov al, [player_score]
+    mov bl, [dealer_score]
+    
+    cmp al, 21
+    ja player_loses        ; si player_score > 21
+    
+    cmp bl, 21
+    ja player_wins         ; si dealer_score > 21
+    
+    cmp al, bl
+    ja player_wins
+    jb player_loses
+    
+    mov dx, offset msg_tie
+    jmp show_result
+    
+player_wins:
+    mov dx, offset msg_win
+    jmp show_result
+    
+player_loses:
+    mov dx, offset msg_lose
+    
+show_result:
+    mov ah, 09h
+    int 21h
+    call print_newline
+    ret
 
